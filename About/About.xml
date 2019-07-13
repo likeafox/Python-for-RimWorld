@@ -1,0 +1,8 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <name>Python For Rimworld</name>
+  <author>likeafox</author>
+  <!--<url>http://example.com</url>-->
+  <targetVersion>1.0.2059</targetVersion>
+  <description>Python is a great scripting language!</description>
+</ModMetaData>
