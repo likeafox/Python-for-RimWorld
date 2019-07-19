@@ -100,7 +100,7 @@ namespace Python
         private Microsoft.Scripting.Hosting.ScriptScope scope;
         private IronPython.Modules.PythonIOModule.StringIO python_output_buffer;
         private IronPython.Runtime.PythonFunction python_compile_command;
-        private IronPython.Runtime.Method python_interpreter_runcode;
+        private IronPython.Runtime.PythonFunction python_console_run_code;
         public LineBuffer output;
         public LineBuffer input;
         private StringBuilder editor;
@@ -116,18 +116,31 @@ namespace Python
             Python.Engine.Execute(
                 "import sys"
                 +"\nimport code"
+                +"\nfrom code import compile_command"
                 +"\nimport io"
+                +"\nfrom contextlib import contextmanager"
                 +"\noutput_buffer = io.StringIO()"
                 +"\nsys.stdout = sys.stderr = output_buffer"
                 +"\nimport clr"
                 +"\nimport Verse"
                 +"\ng = dict((k,v) for k,v in globals().items() if k in {'__name__','__doc__','clr','Verse'})"
                 +"\ninterpreter = code.InteractiveInterpreter(g)"
+                +"\nbackup_fds = []"
+
+                + "\n@contextmanager"
+                + "\ndef redirect_output(fd):"
+                + "\n\tbackup_fds.append((sys.stdout, sys.stderr))"
+                + "\n\tsys.stdout, sys.stderr = fd, fd"
+                + "\n\tyield"
+                + "\n\tsys.stdout, sys.stderr = backup_fds.pop()"
+
+                + "\ndef console_run_code(code):"
+                + "\n\twith redirect_output(output_buffer):"
+                + "\n\t\treturn interpreter.runcode(code)"
                 , scope);
             python_output_buffer = scope.GetVariable<IronPython.Modules.PythonIOModule.StringIO>("output_buffer");
-            python_compile_command = scope.Engine.Execute<IronPython.Runtime.PythonFunction>("code.compile_command", scope);
-            var python_interpreter = scope.GetVariable<IronPython.Runtime.Types.OldInstance>("interpreter");
-            python_interpreter_runcode = ops.GetMember<IronPython.Runtime.Method>(python_interpreter, "runcode");
+            python_compile_command = scope.GetVariable<IronPython.Runtime.PythonFunction>("compile_command");
+            python_console_run_code = scope.GetVariable<IronPython.Runtime.PythonFunction>("console_run_code");
 
             output = new LineBuffer(new string[] {">>> "});
             input = new LineBuffer(new string[] {""});
@@ -219,7 +232,7 @@ namespace Python
                 {
                     try
                     {
-                        ops.Invoke(python_interpreter_runcode, compiled);
+                        ops.Invoke(python_console_run_code, compiled);
                     }
                     catch (Exception e)
                     {
@@ -227,17 +240,15 @@ namespace Python
                     }
                 }
             }
-            //consume output buffer
-            string new_output = python_output_buffer.getvalue(IronPython.Runtime.DefaultContext.Default);
-            // commenting out InvokeMember which doesn't work for some reason
-            //string new_output = (string)ops.InvokeMember(python_output_buffer, "getvalue");
-            if (new_output.Length > 0)
             {
-                output.AddMultiline(new_output);
-                python_output_buffer.truncate(IronPython.Runtime.DefaultContext.Default, 0);
-                //    ops.InvokeMember(python_output_buffer, "truncate", 0);
-                python_output_buffer.seek(IronPython.Runtime.DefaultContext.Default, 0, 0);
-                //    ops.InvokeMember(python_output_buffer, "seek", 0, 0);
+                //consume output buffer
+                string new_output = python_output_buffer.getvalue(IronPython.Runtime.DefaultContext.Default);
+                if (new_output.Length > 0)
+                {
+                    output.AddMultiline(new_output);
+                    python_output_buffer.truncate(IronPython.Runtime.DefaultContext.Default, 0);
+                    python_output_buffer.seek(IronPython.Runtime.DefaultContext.Default, 0, 0);
+                }
             }
 
         DonePython:
@@ -681,7 +692,7 @@ namespace Python
         float titlebarHeight = 28f;
         float statusbarHeight = 22f;
         float consoleMargin = 4f;
-        private bool hasSetInitialSizeOnce = false;
+        private bool hasSetInitialRectOnce = false;
 
         public void DrawConsole(Rect rect)
         {
@@ -811,14 +822,14 @@ namespace Python
 
         protected override void SetInitialSizeAndPosition()
         {
-            if (!hasSetInitialSizeOnce
+            if (!hasSetInitialRectOnce
                 || windowRect.xMin < 0
                 || windowRect.yMin < 0
                 || windowRect.xMax > UI.screenWidth
                 || windowRect.yMax > UI.screenHeight)
             {
                 base.SetInitialSizeAndPosition();
-                hasSetInitialSizeOnce = true;
+                hasSetInitialRectOnce = true;
             }
         }
 
