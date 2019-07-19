@@ -229,11 +229,15 @@ namespace Python
             }
             //consume output buffer
             string new_output = python_output_buffer.getvalue(IronPython.Runtime.DefaultContext.Default);
+            // commenting out InvokeMember which doesn't work for some reason
+            //string new_output = (string)ops.InvokeMember(python_output_buffer, "getvalue");
             if (new_output.Length > 0)
             {
                 output.AddMultiline(new_output);
                 python_output_buffer.truncate(IronPython.Runtime.DefaultContext.Default, 0);
+                //    ops.InvokeMember(python_output_buffer, "truncate", 0);
                 python_output_buffer.seek(IronPython.Runtime.DefaultContext.Default, 0, 0);
+                //    ops.InvokeMember(python_output_buffer, "seek", 0, 0);
             }
 
         DonePython:
@@ -674,6 +678,10 @@ namespace Python
         //private ConsoleTextureCacheRenderer textureCacheRenderer;
         private Texture2D bgTex;
         private int controlIDHint;
+        float titlebarHeight = 28f;
+        float statusbarHeight = 22f;
+        float consoleMargin = 4f;
+        private bool hasSetInitialSizeOnce = false;
 
         public void DrawConsole(Rect rect)
         {
@@ -715,9 +723,30 @@ namespace Python
             */
         }
 
-        public override void DoWindowContents(Rect inRect)
+        protected override float Margin { get { return 1f; } }
+
+        public override void DoWindowContents(Rect borderRect)
         {
-            Rect consoleRect = new Rect(inRect.x, inRect.y + 25f, inRect.width, inRect.height - 50f);
+            Rect consoleRect = new Rect(borderRect);
+            consoleRect.yMin += titlebarHeight;
+            consoleRect.yMax -= statusbarHeight;
+            consoleRect = consoleRect.ContractedBy(consoleMargin);
+
+            {
+                var button_rects = Enumerable.Range(0, int.MaxValue).Select(delegate (int x) {
+                    float right = borderRect.width - 32f - (32f * x);
+                    return new Rect(right - 24f, 3f, 24f, 24f);
+                }).GetEnumerator();
+
+                //new window button
+                button_rects.MoveNext();
+                if (Widgets.ButtonImage(button_rects.Current, ConsoleTexturePool.Get("Console/NewConsoleWindowButton")))
+                {
+                    //button pressed
+                    Find.WindowStack.Add(new ConsoleWindow());
+                }
+            }
+
             int id = GUIUtility.GetControlID(controlIDHint, FocusType.Keyboard, consoleRect);
 
             switch (Event.current.type)
@@ -772,6 +801,27 @@ namespace Python
             }
         }
 
+        public override Vector2 InitialSize
+        {
+            get
+            {
+                return new Vector2(550, 350);
+            }
+        }
+
+        protected override void SetInitialSizeAndPosition()
+        {
+            if (!hasSetInitialSizeOnce
+                || windowRect.xMin < 0
+                || windowRect.yMin < 0
+                || windowRect.xMax > UI.screenWidth
+                || windowRect.yMax > UI.screenHeight)
+            {
+                base.SetInitialSizeAndPosition();
+                hasSetInitialSizeOnce = true;
+            }
+        }
+
         public ConsoleWindow(Console attachConsole = null)
         {
             //Verse.Window config
@@ -779,9 +829,10 @@ namespace Python
             draggable = true;
             preventCameraMotion = false;
             doCloseX = true;
-            optionalTitle = "Python console";
+            optionalTitle = ""; //should render this myself, to avoid the title causing side effects in Window.WindowOnGUI
             closeOnAccept = false;
             closeOnCancel = false;
+            onlyOneOfTypeAllowed = false;
 
             //the rest
             console = attachConsole ?? new Console();
@@ -797,24 +848,22 @@ namespace Python
 
     public class ConsoleButton
     {
-        private Texture2D _icon = null;
-        public Texture2D Icon
+        private static HarmonyInstance harmony = null;
+        private static ConsoleButton _instance = null;
+        public static ConsoleButton Instance
         {
             get
             {
-                if (_icon == null) _icon = ContentFinder<Texture2D>.Get("PythonConsoleOpen", true);
-                return _icon;
-            }
-        }
-
-        private ConsoleButton() { }
-        private static ConsoleButton _instance = null;
-        public static ConsoleButton Instance {
-            get {
                 if (_instance == null)
-                    throw new System.InvalidOperationException("ConsoleButton has not been initialized");
+                    throw new System.InvalidOperationException("ConsoleButton has not been instantiated");
                 return _instance;
             }
+        }
+        public static bool Installed { get { return _instance != null; } }
+
+        private List<ConsoleWindow> windows_storage = new List<ConsoleWindow>();
+
+        private ConsoleButton() {
         }
 
         public static void Install()
@@ -823,7 +872,9 @@ namespace Python
                 throw new System.InvalidOperationException("A ConsoleButton is already installed");
             _instance = new ConsoleButton();
 
-            var harmony = HarmonyInstance.Create("likeafox.rimworld.python.consolebutton");
+            if (harmony == null)
+                harmony = HarmonyInstance.Create("likeafox.rimworld.python.consolebutton");
+
             harmony.Patch(typeof(WindowStack).GetMethod("ImmediateWindow",
                 BindingFlags.Public | BindingFlags.Instance),
                 prefix: new HarmonyMethod(typeof(ConsoleButton).GetMethod(
@@ -841,12 +892,41 @@ namespace Python
             throw new NotImplementedException();
         }
 
-        private static void DrawButton(WidgetRow widgetRow)
+        private static void ButtonOnGUI(WidgetRow widgetRow)
         {
-            if (widgetRow.ButtonIcon(Instance.Icon, "Open the Python console."))
+            if (widgetRow.ButtonIcon(ConsoleTexturePool.Get("Console/PythonConsoleOpen"), "Open the Python console."))
             {
-                if (!Find.WindowStack.TryRemove(typeof(ConsoleWindow), true))
-                    Find.WindowStack.Add(new ConsoleWindow());
+                //button was clicked
+                var inst = Instance;
+                List<Verse.Window> windowstack_windows =
+                    (List<Window>)typeof(WindowStack).InvokeMember("windows", BindingFlags.GetField
+                    | BindingFlags.Instance | BindingFlags.NonPublic, null, Find.WindowStack, null);
+                List<ConsoleWindow> visible_windows =
+                    windowstack_windows.FindAll(w => typeof(ConsoleWindow).IsInstanceOfType(w))
+                    .Cast<ConsoleWindow>().ToList();
+
+                if (visible_windows.Count > 0)
+                {
+                    //put all visible console windows into storage
+                    foreach (Window w in visible_windows)
+                        Find.WindowStack.TryRemove(w, false);
+                    inst.windows_storage.AddRange(visible_windows);
+                }
+                else
+                {
+                    if (inst.windows_storage.Count > 0)
+                    {
+                        //move stored windows back to WindowStack
+                        foreach (Window w in inst.windows_storage)
+                            Find.WindowStack.Add(w);
+                        inst.windows_storage.Clear();
+                    }
+                    else
+                    {
+                        //there are no console windows at all; make one
+                        Find.WindowStack.Add(new ConsoleWindow());
+                    }
+                }
             }
         }
 
@@ -867,13 +947,28 @@ namespace Python
 
             //https://en.wikipedia.org/wiki/List_of_CIL_instructions
             yield return new CodeInstruction(OpCodes.Ldloc_0);
-            var method = typeof(ConsoleButton).GetMethod("DrawButton",
+            var method = typeof(ConsoleButton).GetMethod("ButtonOnGUI",
                 BindingFlags.Static | BindingFlags.NonPublic);
             yield return new CodeInstruction(OpCodes.Call, method);
 
             IEnumerable<CodeInstruction> the_rest = instructions.Skip(2);
             foreach (var ci in the_rest)
                 yield return ci;
+        }
+    }
+
+    internal static class ConsoleTexturePool
+    {
+        private static Dictionary<string, Texture2D> textures = new Dictionary<string, Texture2D>();
+
+        internal static Texture2D Get(string path)
+        {
+            try
+            {
+                return textures[path];
+            }
+            catch { }
+            return textures[path] = ContentFinder<Texture2D>.Get(path, true);
         }
     }
 }
