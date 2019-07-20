@@ -43,8 +43,9 @@ namespace Python
             string searchpath = System.IO.Path.Combine(Util.ModBasePath, "IronPython-2.7.7/Lib/").Replace(@"\", @"\\");
             _engine.SetSearchPaths(new string[] { searchpath });
 
-            Runtime.LoadAssembly(typeof(Verse.Game).Assembly);
             Runtime.LoadAssembly(System.Reflection.Assembly.GetExecutingAssembly());
+            Runtime.LoadAssembly(typeof(Verse.Game).Assembly);
+            Runtime.LoadAssembly(typeof(Harmony.HarmonyInstance).Assembly);
         }
     }
 }
