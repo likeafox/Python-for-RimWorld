@@ -22,7 +22,7 @@ namespace Python
             //GetEncodings() current behaviour is to return a mix of broken encodings interspersed with the valid ones.
             //This problem seems to be specific to this version of Mono.
             //The following nasty hack removes the broken encodings.
-            //relevant article:
+            //a related article:
             //https://xamarin.github.io/bugzilla-archives/81/8117/bug.html
 
             var valid_encodings = new List<EncodingInfo>();
