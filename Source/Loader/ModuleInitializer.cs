@@ -4,7 +4,7 @@ using System.Reflection;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace PythonLoader
+namespace Python.Loader
 {
     internal static class ModuleInitializer
     {
@@ -13,6 +13,7 @@ namespace PythonLoader
             "IronPython-2.7.7/Platforms/Net35/"
         };
         private static Dictionary<string, string> assembly_listing;
+        internal static readonly string modDirectory = FindModDirectory();
 
         private static Assembly AssemblyResolveHandler(object sender, ResolveEventArgs args)
         {
@@ -48,7 +49,7 @@ namespace PythonLoader
         {
             // set up assembly_listing
             FileInfo[] files = assembly_subdirs.SelectMany(delegate (string sd) {
-                string dir = Path.Combine(FindModDirectory(), sd);
+                string dir = Path.Combine(modDirectory, sd);
                 return new DirectoryInfo(dir).GetFiles("*.dll", SearchOption.TopDirectoryOnly);
             }).ToArray();
             assembly_listing = new Dictionary<string, string>();
