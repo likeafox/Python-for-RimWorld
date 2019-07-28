@@ -29,15 +29,9 @@ namespace Python
 
         protected List<string> lines = new List<string>();
 
-        public IEnumerator<string> GetEnumerator()
-        {
-            return lines.GetEnumerator();
-        }
+        public IEnumerator<string> GetEnumerator() => lines.GetEnumerator();
 
-        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
-        {
-            return this.GetEnumerator();
-        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => this.GetEnumerator();
 
         protected virtual void ValidateInput(string input)
         {
@@ -84,7 +78,7 @@ namespace Python
                 OnLineModified(new LineModifiedEventArgs() { index = start_index+i, updatedValue = newlines[i] });
         }
 
-        public int LineCount { get { return lines.Count; } }
+        public int LineCount => lines.Count;
 
         public LineBuffer() { }
         public LineBuffer(IEnumerable<string> lines)
@@ -565,8 +559,8 @@ namespace Python
 
         // metrics
         private IntVec2 _charGridSize;
-        public IntVec2 CharGridSize { get { return _charGridSize; } }
-        public int ContentLengthRequirement { get { return CharGridSize.x * CharGridSize.y; } }
+        public IntVec2 CharGridSize => _charGridSize;
+        public int ContentLengthRequirement => CharGridSize.x * CharGridSize.y;
 
         // Interface
         public ConsoleTextureCacheRenderer()
@@ -734,7 +728,7 @@ namespace Python
             */
         }
 
-        protected override float Margin { get { return 1f; } }
+        protected override float Margin => 1f;
 
         public override void DoWindowContents(Rect borderRect)
         {
@@ -812,13 +806,7 @@ namespace Python
             }
         }
 
-        public override Vector2 InitialSize
-        {
-            get
-            {
-                return new Vector2(550, 350);
-            }
-        }
+        public override Vector2 InitialSize => new Vector2(550, 350);
 
         protected override void SetInitialSizeAndPosition()
         {
@@ -870,7 +858,7 @@ namespace Python
                 return _instance;
             }
         }
-        public static bool Installed { get { return _instance != null; } }
+        public static bool Installed => _instance != null;
 
         private List<ConsoleWindow> windows_storage = new List<ConsoleWindow>();
 

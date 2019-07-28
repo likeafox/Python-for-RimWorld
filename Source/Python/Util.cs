@@ -1,7 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.IO;
 
 namespace Python
@@ -59,10 +57,7 @@ namespace Python
             return Equals((IntVec2)obj);
         }
 
-        public override int GetHashCode()
-        {
-            return 10007 * y + x;
-        }
+        public override int GetHashCode() => 10007 * y + x;
     }
 
     public static class StringUtil
