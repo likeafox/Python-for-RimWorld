@@ -58,7 +58,7 @@ namespace Python.Loader
 
         internal static void InstallPythonModBootstrapper()
         {
-            tracker = ModClassCreationTracker.Create(typeof(Mod));
+            tracker = ModClassCreationTracker.Create(typeof(PythonLoaderMod));
             tracker.ModDoneCreating +=
                 delegate (object sender, ModClassCreationTracker.ModDoneCreatingEventArgs e)
             {
@@ -157,8 +157,8 @@ namespace Python.Loader
             //set initial state
             ProbeLoadState();
             cycle = 0;
-            if (detectType != null)
-                infoByClass[detectType].trackedLoadState = false;
+            try { infoByClass[detectType].trackedLoadState = false; }
+            catch { throw new ArgumentException("detectType did not match any loaded type."); }
         }
 
         private void ProbeLoadState()
