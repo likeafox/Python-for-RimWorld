@@ -105,33 +105,10 @@ namespace Python
         //constructor
         public Console()
         {
-            scope = Python.CreateScope();
+            scope = Py.CreateScope();
             var ops = scope.Engine.Operations;
-            Python.Engine.Execute(
-                "import sys"
-                +"\nimport code"
-                +"\nfrom code import compile_command"
-                +"\nimport io"
-                +"\nfrom contextlib import contextmanager"
-                +"\noutput_buffer = io.StringIO()"
-                +"\nsys.stdout = sys.stderr = output_buffer"
-                +"\nimport clr"
-                +"\nimport Verse"
-                +"\ng = dict((k,v) for k,v in globals().items() if k in {'__name__','__doc__','clr','Verse'})"
-                +"\ninterpreter = code.InteractiveInterpreter(g)"
-                +"\nbackup_fds = []"
-
-                + "\n@contextmanager"
-                + "\ndef redirect_output(fd):"
-                + "\n\tbackup_fds.append((sys.stdout, sys.stderr))"
-                + "\n\tsys.stdout, sys.stderr = fd, fd"
-                + "\n\tyield"
-                + "\n\tsys.stdout, sys.stderr = backup_fds.pop()"
-
-                + "\ndef console_run_code(code):"
-                + "\n\twith redirect_output(output_buffer):"
-                + "\n\t\treturn interpreter.runcode(code)"
-                , scope);
+            string init_script = System.IO.File.ReadAllText(Util.ResourcePath("PythonScripts/initialize_new_console.py"));
+            Py.Engine.Execute(init_script, scope);
             python_output_buffer = scope.GetVariable<IronPython.Modules.PythonIOModule.StringIO>("output_buffer");
             python_compile_command = scope.GetVariable<IronPython.Runtime.PythonFunction>("compile_command");
             python_console_run_code = scope.GetVariable<IronPython.Runtime.PythonFunction>("console_run_code");
@@ -847,7 +824,6 @@ namespace Python
 
     public class ConsoleButton
     {
-        private static HarmonyInstance harmony = null;
         private static ConsoleButton _instance = null;
         public static ConsoleButton Instance
         {
@@ -871,15 +847,12 @@ namespace Python
                 throw new System.InvalidOperationException("A ConsoleButton is already installed");
             _instance = new ConsoleButton();
 
-            if (harmony == null)
-                harmony = HarmonyInstance.Create("likeafox.rimworld.python.consolebutton");
-
-            harmony.Patch(typeof(WindowStack).GetMethod("ImmediateWindow",
+            Util.Harmony.Patch(typeof(WindowStack).GetMethod("ImmediateWindow",
                 BindingFlags.Public | BindingFlags.Instance),
                 prefix: new HarmonyMethod(typeof(ConsoleButton).GetMethod(
                     "Harmony_Prefix_WindowStack_ImmediateWindow",
                     BindingFlags.Static | BindingFlags.NonPublic)));
-            harmony.Patch(typeof(DebugWindowsOpener).GetMethod("DrawButtons",
+            Util.Harmony.Patch(typeof(DebugWindowsOpener).GetMethod("DrawButtons",
                 BindingFlags.NonPublic | BindingFlags.Instance),
                 transpiler: new HarmonyMethod(typeof(ConsoleButton).GetMethod(
                     "Harmony_Transpiler_DebugWindowsOpener_DrawButtons",

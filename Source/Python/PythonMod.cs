@@ -1,49 +1,212 @@
 ﻿using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
 using ModContentPack = Verse.ModContentPack;
+using Microsoft.Scripting.Hosting;
+using System.Text.RegularExpressions;
+using IronPython.Runtime;
 
 namespace Python
 {
-    public class PythonMod
+    public abstract class PythonCodeBase
     {
-        public readonly string pythonDir;
-        public readonly string packageName = null;
-        //reminder: readonly mutable types remain mutable
-        public readonly ModContentPack rwmodInfo = null;
-        public readonly Microsoft.Scripting.Hosting.ScriptScope scope;
-        public readonly Microsoft.Scripting.Hosting.ScriptSource mainScriptSource = null;
-        public readonly bool mainScriptFinished;
+        public readonly ComparablePath pythonDir;
 
-        public PythonMod(string pythonDir, string defaultPackageName = null, ModContentPack rwmodInfo = null)
+        public PythonCodeBase(string pythonDir)
         {
             if (!Directory.Exists(pythonDir))
-                throw new ArgumentException("Python mod directory does not exist");
-            this.pythonDir = pythonDir;
+                throw new ArgumentException("The Python script directory does not exist");
+            this.pythonDir = new ComparablePath(pythonDir);
+        }
+    }
+
+    public interface IPythonModule
+    {
+        string ModuleName { get; }
+        ComparablePath ModulePath { get; }
+        bool IsPackage { get; }
+    }
+
+    public class PythonMod : PythonCodeBase, IPythonModule
+    {
+        //reminder: readonly mutable types remain mutable
+        public readonly ModContentPack rwmodInfo;
+        public readonly string packageName;
+        public readonly ScriptScope scope;
+        public readonly ScriptSource mainScriptSource = null;
+
+        public string ModuleName => packageName;
+        public ComparablePath ModulePath => pythonDir;
+        public bool IsPackage => true;
+
+        public PythonMod(ModContentPack rwmodInfo, string packageName, ScriptScope scope, ScriptSource main)
+            : base(rwmodInfo.PythonFolder())
+        {
             this.rwmodInfo = rwmodInfo;
+            this.packageName = packageName;
+            this.scope = scope;
+            this.mainScriptSource = main;
+        }
 
-            //setup scope
-            scope = Python.CreateScope();
-            scope.SetVariable("__packagename__", defaultPackageName);
-            scope.SetVariable("__contentpack__", rwmodInfo);
+        public static string MakeHiddenPackageName(string name)
+        {
+            string prefix = "[PythonMod:";
+            string suffix = "]";
+            if (name.StartsWith(prefix) && name.EndsWith(suffix))
+                name = name.Substring(prefix.Length, name.Length - (prefix.Length + suffix.Length));
+            name = name.Replace(' ', '_');
+            string[] wordcontent = Regex.Matches(name, @"\w+", RegexOptions.Compiled)
+                .OfType<Match>().Select(m => m.Value).ToArray();
+            name = string.Join("", wordcontent);
+            if (!Regex.IsMatch(name, @"^[A-Za-z]\w{0,63}$", RegexOptions.Compiled))
+                throw new ArgumentException("not valid for hidden package name");
+            string result = prefix + name + suffix;
+            return result;
+        }
+    }
 
-            //run main.py, if there is one
-            string scriptPath = Path.Combine(pythonDir, "main.py");
-            mainScriptFinished = false;
-            if (File.Exists(scriptPath))
+    public abstract class PythonCodebaseFoundation
+    {
+        //this class pretty much exists to have a less bug-prone way to time the initialization of
+        // the mod system properly
+
+        private static bool _initialized = false;
+
+        private void _Initialize()
+        {
+            string init_script = File.ReadAllText(Util.ResourcePath("PythonScripts/initialize_package_resolver.py"));
+            Py.Engine.Execute(init_script);
+            _initialized = true;
+        }
+
+        protected PythonCodebaseFoundation()
+        {
+            if (!_initialized)
+                _Initialize();
+        }
+
+        private static Dictionary<Type, object> instances = new Dictionary<Type, object>();
+
+        public static T GetInstanceOf<T>() where T : PythonCodebaseFoundation, new()
+        {
+            try
             {
-                try
-                {
-                    mainScriptSource = Python.Engine.CreateScriptSourceFromFile(scriptPath);
-                    mainScriptSource.Execute(scope);
-                    mainScriptFinished = true;
-                }
-                catch (Exception e)
-                {
-                    Verse.Log.Error("In '" + scriptPath + "': " + e.ToString());
-                }
+                return (T)instances[typeof(T)];
+            }
+            catch (KeyNotFoundException) { }
+            T o = new T();
+            instances[typeof(T)] = o;
+            return o;
+        }
+
+        public static bool HasInstanceOf<T>() where T : PythonCodebaseFoundation, new()
+            => instances.ContainsKey(typeof(T));
+
+        public virtual IEnumerable<IPythonModule> Content { get; }
+
+        // convenience utils
+
+        public static PythonDictionary SystemModules
+        {
+            get
+            {
+                return (PythonDictionary)typeof(PythonContext).InvokeMember("_modulesDict",
+                    BindingFlags.GetField | BindingFlags.Instance | BindingFlags.NonPublic,
+                    null, DefaultContext.DefaultPythonContext, null);
+            }
+        }
+    }
+
+    public class PythonModManager : PythonCodebaseFoundation
+    {
+        private List<PythonMod> ordered = new List<PythonMod>();
+
+        public override IEnumerable<IPythonModule> Content => ordered.Cast<IPythonModule>();
+
+        public static PythonModManager Instance => GetInstanceOf<PythonModManager>();
+
+        public static PythonMod FindModOfFilesystemObject(string path)
+        {
+            if (!HasInstanceOf<PythonModManager>())
+                return null;
+            var compPath = new ComparablePath(path);
+            foreach (var mod in Instance.ordered)
+            {
+                if (mod.pythonDir.IsSameOrParentDirOf(compPath))
+                    return mod;
+            }
+            return null;
+        }
+
+        public static void PopulateWithNewMod(ModContentPack rwmodInfo)
+        {
+            var path = new ComparablePath(rwmodInfo.PythonFolder()); //will throw ex if rwmodInfo is null, which is fine
+            string scriptPath = Path.Combine(path.reconstructedPath, "main.py");
+            if (!Directory.Exists(path.ToString()) || !File.Exists(scriptPath))
+                return;
+
+            ScriptSource mainScriptSource = Py.Engine.CreateScriptSourceFromFile(scriptPath);
+            string packageName = PythonMod.MakeHiddenPackageName(rwmodInfo.Identifier);
+            PythonModManager inst = Instance;
+
+            if (!inst.ordered.TrueForAll(m => m.rwmodInfo != rwmodInfo))
+                throw new ArgumentException(
+                    "The mod with that ModContentPack has already been added");
+
+            //create and import package
+            var pkg = IronPython.Modules.PythonImport.new_module(DefaultContext.Default, packageName);
+            var pkg_dict = (PythonDictionary)typeof(PythonModule).InvokeMember("_dict",
+                BindingFlags.GetField | BindingFlags.NonPublic | BindingFlags.Instance,
+                null, pkg, null);
+            {
+                var __path__ = new IronPython.Runtime.List();
+                __path__.Add(path.reconstructedPath);
+                pkg_dict["__path__"] = __path__;
+                pkg_dict["__file__"] = scriptPath;
+                SystemModules[packageName] = pkg;
             }
 
+            //setup scope
+            ScriptScope scope = Py.CreateScope();
+            scope.SetVariable("__contentpack__", rwmodInfo);
+            //todo: setup extension to do __contentpack__.PythonFolder() in script
+
+            // MAKE MOD OBJECT
+            var mod = new PythonMod(rwmodInfo, packageName, scope, mainScriptSource);
+            inst.ordered.Add(mod);
+
+            //run main.py
+            try
+            {
+                mainScriptSource.Execute(scope);
+            }
+            catch (Exception e)
+            {
+                Verse.Log.Error("In '" + scriptPath + "': " + e.ToString());
+                pkg_dict["__error__"] = e;
+            }
+        }
+    }
+
+    //public class PythonModuleManager : PythonCodebaseFoundation
+    //{
+        /*private List<PythonMod> list = new List<PythonMod>();
+        //private Dictionary<string, PythonMod> byPackageName = new Dictionary<string, PythonMod>();
+
+        private static PythonModList _instance = null;
+        public static PythonModList GetInstance()
+        {
+            if (_instance == null)
+            {
+                _instance = new PythonModList();
+            }
+            return _instance;
+        }
+
+        public void Uh()
+        {
             //resolve packageName
             if (scope.ContainsVariable("__packagename__"))
             {
@@ -69,72 +232,17 @@ namespace Python
             }
         }
 
-        public static bool ValidateModPackageName(object name)
-        {
-            string strname = name as string;
-            if (strname == null)
-                return false;
-            return System.Text.RegularExpressions.Regex.IsMatch(strname, @"^[A-Za-z]\w{0,63}$");
-        }
-    }
-
-    public class PythonModList
-    {
-        private List<PythonMod> list = new List<PythonMod>();
-        private Dictionary<string, PythonMod> byPackageName = new Dictionary<string, PythonMod>();
-
-        private static PythonModList _instance = null;
-        public static PythonModList GetInstance()
-        {
-            if (_instance == null)
-            {
-                _instance = new PythonModList();
-                Python.Engine.Execute(
-                    "class ModPackageFinderLoader(object):"
-                    + "\n\tdef __init__(self):"
-                    + "\n\t\timport imp, Python"
-                    + "\n\t\tself.imp = imp"
-                    + "\n\t\tself.find_root_package_path = Python.PythonModList.FindRootPackagePath"
-                    + "\n\t\tself.last_find = (None, None)"
-                    + "\n"
-                    + "\n\tdef find_module(self, fullname, path=None):"
-                    + "\n\t\tpath = self.find_root_package_path(fullname)"
-                    + "\n\t\tif path is None:"
-                    + "\n\t\t\treturn None"
-                    + "\n\t\tself.last_find = (fullname, path)"
-                    + "\n\t\treturn self"
-                    + "\n"
-                    + "\n\tdef load_module(self, fullname):"
-                    + "\n\t\tlast_fullname, last_path = self.last_find"
-                    + "\n\t\tif fullname == last_fullname:"
-                    + "\n\t\t\tpath = last_path"
-                    + "\n\t\telse:"
-                    + "\n\t\t\tpath = self.find_module(fullname)"
-                    + "\n\t\tif path is None:"
-                    + "\n\t\t\traise ImportError()"
-                    + "\n\t\tdesc = (None, None, self.imp.PKG_DIRECTORY)"
-                    + "\n\t\treturn self.imp.load_module(fullname, None, path, desc)"
-                    + "\n"
-                    + "\nimport sys"
-                    + "\nsys.meta_path.append(ModPackageFinderLoader())"
-                    );
-            }
-            return _instance;
-        }
-
-        private PythonModList()
-        {
-        }
 
         public void Add(PythonMod mod)
         {
-            if (mod.packageName != null)
-                byPackageName.Add(mod.packageName, mod); // throws exception if duplicate
+            //if (mod.packageName != null)
+            //    byPackageName.Add(mod.packageName, mod); // throws exception if duplicate
             list.Add(mod);
-        }
+        }*/
 
-        public static string FindRootPackagePath(string name)
+        /*public static string FindRootPackagePath(string name)
         {
+            return null;
             try
             {
                 return _instance.byPackageName[name].pythonDir;
@@ -144,24 +252,9 @@ namespace Python
                 // fail if _instance is null or key doesn't exist
                 return null;
             }
-        }
+        }*/
 
-        public static void PopulateUsingModInfo(ModContentPack rwmodInfo)
-        {
-            var path = Path.Combine(rwmodInfo.RootDir, "Python/");
-            if (!Directory.Exists(path))
-                return;
-            var inst = GetInstance();
-            if (rwmodInfo != null && !inst.list.TrueForAll(m => m.rwmodInfo != rwmodInfo))
-                throw new ArgumentException(
-                    "The mod with that ModContentPack has already been added to PythonModList");
-            var mod = new PythonMod(
-                path,
-                rwmodInfo.Identifier.ToLower(),
-                rwmodInfo
-                );
-            inst.Add(mod);
-        }
+        //pep 8 recommends all lowercase, so make lowercase the default
 
         /*public static string FindPathOfModule(string fullname)
         {
@@ -201,5 +294,15 @@ namespace Python
                     break;
             }
         }*/
-    }
+
+        /*public static bool ValidateModPackageName(object name)
+        {
+            //this text was considered while designing the function:
+            //https://www.python.org/dev/peps/pep-0008/#package-and-module-names
+            string strname = name as string;
+            if (strname == null)
+                return false;
+            return;
+        }*/
+    //}
 }
