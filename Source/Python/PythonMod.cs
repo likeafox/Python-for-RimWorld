@@ -22,7 +22,7 @@ namespace Python
         }
     }
 
-    public interface IPythonModule
+    public interface IPythonModule : IConsoleTarget
     {
         string ModuleName { get; }
         ComparablePath ModulePath { get; }
@@ -37,6 +37,8 @@ namespace Python
         public readonly ScriptScope scope;
         public readonly ScriptSource mainScriptSource = null;
 
+        public string ConsoleTitle => "Python Mod: " + rwmodInfo.Name;
+        public ScriptScope GetScope() => scope;
         public string ModuleName => packageName;
         public ComparablePath ModulePath => pythonDir;
         public bool IsPackage => true;

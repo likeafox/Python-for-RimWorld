@@ -5,10 +5,7 @@ import io
 from contextlib import contextmanager
 output_buffer = io.StringIO()
 sys.stdout = sys.stderr = output_buffer
-import clr
-import Verse
-g = dict((k, v) for k, v in globals().items() if k in { '__name__','__doc__','clr','Verse'})
-interpreter = code.InteractiveInterpreter(g)
+interpreter = code.InteractiveInterpreter(_locals)
 backup_fds = []
 @contextmanager
 def redirect_output(fd):

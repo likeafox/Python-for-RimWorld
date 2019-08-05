@@ -7,6 +7,7 @@ using Verse;
 using UnityEngine;
 using Harmony;
 using System.Linq;
+using ScriptScope = Microsoft.Scripting.Hosting.ScriptScope;
 
 namespace Python
 {
@@ -88,24 +89,82 @@ namespace Python
         }
     }
 
+    public interface IConsoleTarget
+    {
+        string ConsoleTitle { get; }
+        ScriptScope GetScope();
+    }
+
+    public class ConsoleTarget : IConsoleTarget
+    {
+        public delegate ScriptScope ScopeGetter();
+
+        private string title;
+        private ScopeGetter getscope;
+
+        public virtual string ConsoleTitle => title;
+        public virtual ScriptScope GetScope() => getscope();
+
+        public ConsoleTarget(string title, ScopeGetter getscope)
+        {
+            this.title = title;
+            this.getscope = getscope;
+        }
+
+        //standard options
+        private static IList<IConsoleTarget> _standardOptions = null;
+        public static IList<IConsoleTarget> StandardOptions
+        {
+            get
+            {
+                if (_standardOptions == null)
+                {
+                    var opts = new List<IConsoleTarget>();
+
+                    //First/Default option
+                    var pythonConsoleScope = Py.CreateScope();
+                    Py.Engine.Execute("import Verse, RimWorld", pythonConsoleScope);
+                    opts.Add(new ConsoleTarget("Python Console", () => pythonConsoleScope));
+
+                    _standardOptions = Array.AsReadOnly(opts.ToArray());
+                }
+                return _standardOptions;
+            }
+        }
+        public static IConsoleTarget Default => StandardOptions.First();
+    }
+
     public class Console
     {
         //data
-        private Microsoft.Scripting.Hosting.ScriptScope scope;
+        public readonly IConsoleTarget target;
+        public readonly string title;
+        private ScriptScope scope;
         private IronPython.Modules.PythonIOModule.StringIO python_output_buffer;
         private IronPython.Runtime.PythonFunction python_compile_command;
         private IronPython.Runtime.PythonFunction python_console_run_code;
-        public LineBuffer output;
-        public LineBuffer input;
+        public readonly LineBuffer output;
+        public readonly LineBuffer input;
         private StringBuilder editor;
         private StringBuilder multilineEditor;
         private int _currentInputIndex;
         private int _editorCursor;
 
+        //interface
+
+
         //constructor
-        public Console()
+        public Console(IConsoleTarget target)
         {
+            if (target == null)
+                throw new ArgumentException("target cannot be null");
+            this.target = target;
+            var targetScope = target.GetScope();
+            var locals = new IronPython.Runtime.PythonDictionary();
+            foreach (var name in targetScope.GetVariableNames())
+                locals[name] = targetScope.GetVariable(name);
             scope = Py.CreateScope();
+            scope.SetVariable("_locals", locals);
             var ops = scope.Engine.Operations;
             string init_script = System.IO.File.ReadAllText(Util.ResourcePath("PythonScripts/initialize_new_console.py"));
             Py.Engine.Execute(init_script, scope);
@@ -707,33 +766,71 @@ namespace Python
 
         protected override float Margin => 1f;
 
+        public static void MakeNewWindowMenu()
+        {
+            IEnumerable<IConsoleTarget> targetOptions = new IEnumerable<IConsoleTarget>[]
+            {
+                ConsoleTarget.StandardOptions,
+                PythonModManager.Instance.Content.Cast<IConsoleTarget>()
+            }.SelectMany(x => x);
+
+            var menuOptions = new List<FloatMenuOption>();
+            foreach (IConsoleTarget target in targetOptions)
+            {
+                menuOptions.Add(new FloatMenuOption(target.ConsoleTitle, delegate
+                {
+                    Find.WindowStack.Add(new ConsoleWindow(target));
+                }));
+            }
+
+            Find.WindowStack.Add(new FloatMenu(menuOptions));
+        }
+
         public override void DoWindowContents(Rect borderRect)
         {
-            Rect consoleRect = new Rect(borderRect);
-            consoleRect.yMin += titlebarHeight;
-            consoleRect.yMax -= statusbarHeight;
-            consoleRect = consoleRect.ContractedBy(consoleMargin);
-
+            float buttons_left;
             {
                 var button_rects = Enumerable.Range(0, int.MaxValue).Select(delegate (int x) {
                     float right = borderRect.width - 32f - (32f * x);
                     return new Rect(right - 24f, 3f, 24f, 24f);
                 }).GetEnumerator();
 
+                //duplicate window button
+                button_rects.MoveNext();
+                if (Widgets.ButtonImage(button_rects.Current, ConsoleTexturePool.Get("Console/DuplicateConsoleWindowButton")))
+                {
+                    //button pressed
+                    Find.WindowStack.Add(new ConsoleWindow(console.target));
+                }
+
                 //new window button
                 button_rects.MoveNext();
                 if (Widgets.ButtonImage(button_rects.Current, ConsoleTexturePool.Get("Console/NewConsoleWindowButton")))
                 {
-                    //button pressed
-                    Find.WindowStack.Add(new ConsoleWindow());
+                    MakeNewWindowMenu();
                 }
+
+                buttons_left = button_rects.Current.xMin;
             }
+
+            Rect consoleRect = new Rect(borderRect);
+            consoleRect.yMin += titlebarHeight;
+            consoleRect.yMax -= statusbarHeight;
+            consoleRect = consoleRect.ContractedBy(consoleMargin);
 
             int id = GUIUtility.GetControlID(controlIDHint, FocusType.Keyboard, consoleRect);
 
             switch (Event.current.type)
             {
                 case EventType.Repaint:
+                    //title
+                    Rect titleRect = new Rect(8f, 2f, buttons_left - 8f, titlebarHeight - 2f);
+                    var titleStyle = new GUIStyle(Text.fontStyles[(int)GameFont.Small]);
+                    titleStyle.alignment = TextAnchor.MiddleLeft;
+                    titleStyle.wordWrap = false;
+                    GUI.color = new Color(1f, 1f, 1f);
+                    GUI.Label(titleRect, console.target.ConsoleTitle, titleStyle);
+                    //console
                     DrawConsole(consoleRect);
                     break;
                 case EventType.MouseDown:
@@ -798,8 +895,11 @@ namespace Python
             }
         }
 
-        public ConsoleWindow(Console attachConsole = null)
+        public ConsoleWindow(Console attachConsole)
         {
+            if (attachConsole == null)
+                throw new ArgumentException("attachConsole cannot be null");
+
             //Verse.Window config
             resizeable = true;
             draggable = true;
@@ -811,7 +911,7 @@ namespace Python
             onlyOneOfTypeAllowed = false;
 
             //the rest
-            console = attachConsole ?? new Console();
+            console = attachConsole;
             metrics = new ConsoleMetrics(console, 10);
             //textureCacheRenderer = new ConsoleTextureCacheRenderer();
             bgTex = new Texture2D(1, 1);
@@ -819,6 +919,16 @@ namespace Python
             bgTex.Apply();
             controlIDHint = Util.Random.Next();
             //bgTex = (Texture2D)font.material.mainTexture;
+        }
+
+        public ConsoleWindow(IConsoleTarget target)
+            : this(new Console(target))
+        {
+        }
+
+        public ConsoleWindow()
+            : this(ConsoleTarget.Default)
+        {
         }
     }
 
