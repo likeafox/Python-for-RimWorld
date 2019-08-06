@@ -1,4 +1,4 @@
-"Set up special Python-for-RimWorld's special package resolution"
+"Set up Python-for-RimWorld's special package resolution"
 
 ##### imp.load_module doc #####
 # source found in:

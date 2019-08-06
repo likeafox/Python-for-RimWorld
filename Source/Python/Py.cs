@@ -21,7 +21,7 @@ namespace Python
 
         public static ScriptScope CreateScope()
         {
-            return Runtime.CreateScope("IronPython");
+            return Engine.CreateScope();
         }
 
         private static ScriptScope mainScope;
@@ -32,6 +32,7 @@ namespace Python
                 return;
 
             BugFixer.Run();
+            DebugUtil.Trigger();
 
             string langQName = typeof(IronPython.Runtime.PythonContext).AssemblyQualifiedName;
             var langSetup = new LanguageSetup(langQName, "IronPython",

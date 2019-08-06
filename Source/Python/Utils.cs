@@ -1,9 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using Harmony;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Linq;
+
+using ScriptScope = Microsoft.Scripting.Hosting.ScriptScope;
+using IronPython.Runtime;
+using Harmony;
 
 namespace Python
 {
@@ -169,11 +173,43 @@ namespace Python
         }
     }
 
-    public static class ModContentPackExtensions
+    public static class StandardScriptingExtensions
     {
         public static string PythonFolder(this Verse.ModContentPack mcp)
         {
             return Path.Combine(mcp.RootDir, "Python/");
+        }
+
+        public static ModuleContext GetModuleContext(this ScriptScope scriptScope)
+        {
+            var scope = (Microsoft.Scripting.Runtime.Scope)typeof(ScriptScope).InvokeMember("_scope",
+                BindingFlags.GetField | BindingFlags.NonPublic | BindingFlags.Instance,
+                null, scriptScope, null);
+            DefaultContext.DefaultPythonContext.EnsureScopeExtension(scope);
+            var ext = scope.GetExtension(DefaultContext.DefaultPythonContext.ContextId);
+            if (ext == null)
+                return null;
+            Type PythonScopeExtension = typeof(PythonContext).Assembly.GetType("IronPython.Runtime.PythonScopeExtension");
+            ModuleContext mod = (ModuleContext)PythonScopeExtension.GetProperty("ModuleContext").GetValue(ext, null);
+            return mod;
+        }
+
+        public static void AddExtensionType(this ModuleContext mc, Type type)
+        {
+            System.Type ExtensionMethodSet = typeof(PythonContext).Assembly.GetType("IronPython.Runtime.ExtensionMethodSet");
+            var extsetProp = typeof(ModuleContext).GetProperty("ExtensionMethods",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            object existingExt = extsetProp.GetValue(mc, null);
+            var args = new object[] { mc.Context, existingExt, ClrModule.GetPythonType(type) };
+            object newExt = ExtensionMethodSet.GetMethod("AddType").Invoke(null, args);
+            extsetProp.SetValue(mc, newExt, null);
+        }
+    }
+
+    public static partial class DebugUtil
+    {
+        public static void Trigger()
+        {
         }
     }
 }

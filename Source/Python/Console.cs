@@ -91,7 +91,9 @@ namespace Python
 
     public interface IConsoleTarget
     {
+        // ConsoleTitle's value should not change for the life of the IConsoleTarget instance
         string ConsoleTitle { get; }
+        // GetScope can return any valid scope
         ScriptScope GetScope();
     }
 
@@ -158,6 +160,7 @@ namespace Python
         {
             if (target == null)
                 throw new ArgumentException("target cannot be null");
+            title = target.ConsoleTitle;
             this.target = target;
             var targetScope = target.GetScope();
             var locals = new IronPython.Runtime.PythonDictionary();
@@ -829,7 +832,7 @@ namespace Python
                     titleStyle.alignment = TextAnchor.MiddleLeft;
                     titleStyle.wordWrap = false;
                     GUI.color = new Color(1f, 1f, 1f);
-                    GUI.Label(titleRect, console.target.ConsoleTitle, titleStyle);
+                    GUI.Label(titleRect, console.title, titleStyle);
                     //console
                     DrawConsole(consoleRect);
                     break;

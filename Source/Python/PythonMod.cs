@@ -173,7 +173,7 @@ namespace Python
             //setup scope
             ScriptScope scope = Py.CreateScope();
             scope.SetVariable("__contentpack__", rwmodInfo);
-            //todo: setup extension to do __contentpack__.PythonFolder() in script
+            scope.GetModuleContext().AddExtensionType(typeof(StandardScriptingExtensions));
 
             // MAKE MOD OBJECT
             var mod = new PythonMod(rwmodInfo, packageName, scope, mainScriptSource);
