@@ -10,27 +10,16 @@ using IronPython.Runtime;
 
 namespace Python
 {
-    public abstract class PythonCodeBase
-    {
-        public readonly ComparablePath pythonDir;
-
-        public PythonCodeBase(string pythonDir)
-        {
-            if (!Directory.Exists(pythonDir))
-                throw new ArgumentException("The Python script directory does not exist");
-            this.pythonDir = new ComparablePath(pythonDir);
-        }
-    }
-
-    public interface IPythonModule : IConsoleTarget
+    public interface IPythonModule
     {
         string ModuleName { get; }
         ComparablePath ModulePath { get; }
         bool IsPackage { get; }
     }
 
-    public class PythonMod : PythonCodeBase, IPythonModule
+    public class PythonMod : IPythonModule, IConsoleTarget
     {
+        public readonly ComparablePath pythonDir;
         //reminder: readonly mutable types remain mutable
         public readonly ModContentPack rwmodInfo;
         public readonly string packageName;
@@ -44,8 +33,11 @@ namespace Python
         public bool IsPackage => true;
 
         public PythonMod(ModContentPack rwmodInfo, string packageName, ScriptScope scope, ScriptSource main)
-            : base(rwmodInfo.PythonFolder())
         {
+            var dir = rwmodInfo.PythonFolder();
+            if (!Directory.Exists(dir))
+                throw new ArgumentException("The Python script directory does not exist");
+            this.pythonDir = new ComparablePath(dir);
             this.rwmodInfo = rwmodInfo;
             this.packageName = packageName;
             this.scope = scope;
@@ -73,8 +65,10 @@ namespace Python
     {
         //this class pretty much exists to have a less bug-prone way to time the initialization of
         // the mod system properly
+        //Yes, writing more code to have less bugs. WHAT OF IT?
 
         private static bool _initialized = false;
+        private static Type _currentStartup = null;
 
         private void _Initialize()
         {
@@ -85,11 +79,17 @@ namespace Python
 
         protected PythonCodebaseFoundation()
         {
+            if (_currentStartup != this.GetType())
+            {
+                throw new InvalidOperationException(
+                    "Only use GetInstanceOf to get an instance of a PythonCodebaseFoundation subclass");
+            }
             if (!_initialized)
                 _Initialize();
         }
 
-        private static Dictionary<Type, object> instances = new Dictionary<Type, object>();
+        private static Dictionary<Type, PythonCodebaseFoundation> instances =
+            new Dictionary<Type, PythonCodebaseFoundation>();
 
         public static T GetInstanceOf<T>() where T : PythonCodebaseFoundation, new()
         {
@@ -98,15 +98,41 @@ namespace Python
                 return (T)instances[typeof(T)];
             }
             catch (KeyNotFoundException) { }
-            T o = new T();
-            instances[typeof(T)] = o;
-            return o;
+
+            if (_currentStartup != null)
+            {
+                throw new InvalidOperationException("Only one PythonCodebaseFoundation class may be initialized at a time.");
+            }
+            else
+            {
+                _currentStartup = typeof(T);
+                try
+                {
+                    T o = new T();
+                    instances[typeof(T)] = o;
+                    return o;
+                }
+                finally
+                {
+                    _currentStartup = null;
+                }
+            }
         }
 
         public static bool HasInstanceOf<T>() where T : PythonCodebaseFoundation, new()
             => instances.ContainsKey(typeof(T));
 
-        public virtual IEnumerable<IPythonModule> Content { get; }
+        public static IEnumerable<T> GetAllContent<T>()
+            => instances.Values.Select(o => o.GetContent<T>()).SelectMany(x => x);
+        public static IEnumerable<T> GetContent<Manager, T>() where Manager : PythonCodebaseFoundation
+        {
+            PythonCodebaseFoundation inst;
+            if (instances.TryGetValue(typeof(Manager), out inst))
+                return inst.GetContent<T>();
+            else
+                return new T[] { };
+        }
+        protected virtual IEnumerable<T> GetContent<T>() => new T[] { };
 
         // convenience utils
 
@@ -125,7 +151,15 @@ namespace Python
     {
         private List<PythonMod> ordered = new List<PythonMod>();
 
-        public override IEnumerable<IPythonModule> Content => ordered.Cast<IPythonModule>();
+        protected override IEnumerable<T> GetContent<T>()
+        {
+            if (typeof(T) == typeof(PythonMod))
+                return (IEnumerable<T>)ordered;
+            else if (typeof(T).IsAssignableFrom(typeof(PythonMod)))
+                return ordered.Cast<T>();
+            else
+                return base.GetContent<T>();
+        }
 
         public static PythonModManager Instance => GetInstanceOf<PythonModManager>();
 
@@ -151,7 +185,8 @@ namespace Python
 
             ScriptSource mainScriptSource = Py.Engine.CreateScriptSourceFromFile(scriptPath);
             string packageName = PythonMod.MakeHiddenPackageName(rwmodInfo.Identifier);
-            PythonModManager inst = Instance;
+
+            PythonModManager inst = Instance; //getting this after several potential points of failure, to avoid pointless instantiation
 
             if (!inst.ordered.TrueForAll(m => m.rwmodInfo != rwmodInfo))
                 throw new ArgumentException(
@@ -159,7 +194,7 @@ namespace Python
 
             //create and import package
             var pkg = IronPython.Modules.PythonImport.new_module(DefaultContext.Default, packageName);
-            var pkg_dict = (PythonDictionary)typeof(PythonModule).InvokeMember("_dict",
+            var pkg_dict = (PythonDictionary)typeof(IronPython.Runtime.PythonModule).InvokeMember("_dict",
                 BindingFlags.GetField | BindingFlags.NonPublic | BindingFlags.Instance,
                 null, pkg, null);
             {
@@ -192,119 +227,52 @@ namespace Python
         }
     }
 
-    //public class PythonModuleManager : PythonCodebaseFoundation
-    //{
-        /*private List<PythonMod> list = new List<PythonMod>();
-        //private Dictionary<string, PythonMod> byPackageName = new Dictionary<string, PythonMod>();
-
-        private static PythonModList _instance = null;
-        public static PythonModList GetInstance()
+    /*public class BundledModuleManager : PythonCodebaseFoundation
+    {
+        private struct BundledModuleInfo : IPythonModule
         {
-            if (_instance == null)
-            {
-                _instance = new PythonModList();
-            }
-            return _instance;
+            public string name;
+            public ComparablePath path;
+            public string ModuleName => name;
+            public ComparablePath ModulePath => path;
+            public bool IsPackage => path.IsDir;
         }
+        private Dictionary<string, BundledModuleInfo> availableModules = new Dictionary<string, BundledModuleInfo>();
 
-        public void Uh()
+        public BundledModuleManager()
         {
-            //resolve packageName
-            if (scope.ContainsVariable("__packagename__"))
+            string[] files = Directory.GetFiles(Util.BundledModulesDir);
+            foreach (var path in files)
             {
-                string raw_packageName = null;
-                try
-                {
-                    raw_packageName = scope.GetVariable<string>("__packagename__");
-                    if (ValidateModPackageName(raw_packageName))
-                        packageName = raw_packageName;
-                    else if (raw_packageName == null && ValidateModPackageName(defaultPackageName))
-                        packageName = defaultPackageName;
-                    else
-                        Verse.Log.Error("Could not determine a valid python package name");
-                }
-                catch (Exception e)
-                {
-                    Verse.Log.Error("Error resolving __packagename__: " + e.ToString());
-                }
+                var cpath = new ComparablePath(path);
+                var fn = cpath.filePart;
+                if (fn.Length > 3 && fn.ToLower().EndsWith(".py"))
+                    availableModules[fn] = new BundledModuleInfo() { name = fn, path = cpath };
             }
-            else
+
+            string[] dirs = Directory.GetDirectories(Util.BundledModulesDir);
+            var sep = Path.DirectorySeparatorChar.ToString();
+            foreach (var path in dirs)
             {
-                //user deleted __packagename__; packageName shall remain null
+                var cpath = new ComparablePath(path + (path.EndsWith(sep) ? "" : sep));
+                var name = cpath.dirParts.Last();
+                availableModules[name] = new BundledModuleInfo() { name = name, path = cpath };
             }
         }
 
+        protected override IEnumerable<IPythonModule> GetContent<IPythonModule>()
+            => availableModules.Values.ToArray().Cast<IPythonModule>();
 
-        public void Add(PythonMod mod)
+        public static IPythonModule Lookup(string name)
         {
-            //if (mod.packageName != null)
-            //    byPackageName.Add(mod.packageName, mod); // throws exception if duplicate
-            list.Add(mod);
-        }*/
-
-        /*public static string FindRootPackagePath(string name)
-        {
-            return null;
-            try
-            {
-                return _instance.byPackageName[name].pythonDir;
+            var inst = GetInstanceOf<BundledModuleManager>();
+            try {
+                return inst.availableModules[name];
             }
-            catch
-            {
-                // fail if _instance is null or key doesn't exist
+            catch {
                 return null;
             }
-        }*/
+        }
+    }*/
 
-        //pep 8 recommends all lowercase, so make lowercase the default
-
-        /*public static string FindPathOfModule(string fullname)
-        {
-            if (_instance == null)
-                return null;
-            var name_parts = fullname.Split('.');
-            PythonMod mod = null;
-            foreach (PythonMod m in _instance.list)
-            {
-                if (m.packageName == name_parts[0])
-                {
-                    mod = m;
-                    break;
-                }
-            }
-            if (mod == null)
-                return null;
-
-            string path = mod.pythonModDir;
-
-            switch (name_parts.Count())
-            {
-                case 1:
-                    return path;
-                default:
-                    var mid_parts = name_parts.Skip(1).Take(name_parts.Count() - 2);
-                    foreach (string part in mid_parts)
-                    {
-                        path = System.IO.Path.Combine(path, part);
-                        if (!System.IO.Directory.Exists(path))
-                            return null;
-                    }
-                    break;
-                case 2:
-                    var last_part = name_parts.Last();
-                    //etc
-                    break;
-            }
-        }*/
-
-        /*public static bool ValidateModPackageName(object name)
-        {
-            //this text was considered while designing the function:
-            //https://www.python.org/dev/peps/pep-0008/#package-and-module-names
-            string strname = name as string;
-            if (strname == null)
-                return false;
-            return;
-        }*/
-    //}
 }

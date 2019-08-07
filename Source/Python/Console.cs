@@ -774,7 +774,7 @@ namespace Python
             IEnumerable<IConsoleTarget> targetOptions = new IEnumerable<IConsoleTarget>[]
             {
                 ConsoleTarget.StandardOptions,
-                PythonModManager.Instance.Content.Cast<IConsoleTarget>()
+                PythonModManager.GetContent<PythonModManager, IConsoleTarget>()
             }.SelectMany(x => x);
 
             var menuOptions = new List<FloatMenuOption>();

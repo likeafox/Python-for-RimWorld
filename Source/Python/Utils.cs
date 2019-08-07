@@ -40,6 +40,8 @@ namespace Python
             }
         }
 
+        public static string BundledModulesDir => Path.Combine(ModBasePath, "PythonModules/");
+
         public static string ResourcePath(string filename = "")
         {
             return Path.Combine(Path.Combine(ModBasePath, "Resources/"), filename);

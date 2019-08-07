@@ -54,23 +54,24 @@ namespace Python
 
             //This works for the simple purpose of creating a __main__ module
             //inspect.stack() should work after doing this.
-            //Not sure if there's a better way, still not entirely sure how modules work in IronPython
+            //Not sure if there's a better way.
             //This solution is from:
             //https://stackoverflow.com/questions/8264596/how-do-i-set-name-to-main-when-using-ironpython-hosted
             var pco = (IronPython.Compiler.PythonCompilerOptions)_engine.GetCompilerOptions();
             pco.ModuleName = "__main__";
             pco.Module |= IronPython.Runtime.ModuleOptions.Initialize;
-            var source = Engine.CreateScriptSourceFromString("import sys");
+            var source = Engine.CreateScriptSourceFromString(@"'''This is the __main__ module'''");
             CompiledCode compiled = source.Compile(pco);
             mainScope = CreateScope();
             compiled.Execute(mainScope);
 
             //more options
-            string searchpath = System.IO.Path.Combine(Util.ModBasePath, "IronPython-2.7.7/Lib/").Replace(@"\", @"\\");
-            _engine.SetSearchPaths(new string[] { searchpath });
-            //var pco = (IronPython.Compiler.PythonCompilerOptions)_engine.GetCompilerOptions();
-            //pco.ModuleName = "__main__";
-            //pco.Module |= IronPython.Runtime.ModuleOptions.Initialize;
+            string[] searchpaths = new string[]
+            {
+                System.IO.Path.Combine(Util.ModBasePath, "IronPython-2.7.7/Lib/"),
+                Util.BundledModulesDir
+            };
+            _engine.SetSearchPaths(searchpaths);
             _runtime.LoadAssembly(System.Reflection.Assembly.GetExecutingAssembly());
             _runtime.LoadAssembly(typeof(Verse.Game).Assembly);
             _runtime.LoadAssembly(typeof(Harmony.HarmonyInstance).Assembly);

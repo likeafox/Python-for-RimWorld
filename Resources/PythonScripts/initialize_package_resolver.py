@@ -29,9 +29,13 @@
 # 5 and the index of the current line within that list.
 #
 
+## References to understand importing:
+# https://docs.python.org/2/reference/simple_stmts.html#the-import-statement
+# https://www.python.org/dev/peps/pep-0302/#specification-part-1-the-importer-protocol
+
 import imp, inspect, Python, Verse, sys, os.path
 find_mod_for_file = Python.PythonModManager.FindModOfFilesystemObject
- 
+
 class SourceModuleLoader(object):
     def __init__ (self, name, absname, path):
         self.name = name
