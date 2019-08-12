@@ -75,5 +75,21 @@ namespace Python
             _runtime.LoadAssembly(System.Reflection.Assembly.GetExecutingAssembly());
             _runtime.LoadAssembly(typeof(Verse.Game).Assembly);
         }
+
+        public static string GetFullErrorMessage(System.Exception e)
+        {
+            var eo = Engine.GetService<ExceptionOperations>();
+            System.Text.StringBuilder display_msg = new System.Text.StringBuilder();
+            string err_msg, err_typename;
+            eo.GetExceptionMessage(e, out err_msg, out err_typename);
+            display_msg.AppendLine(eo.FormatException(e));
+            display_msg.AppendLine("Traceback:");
+            foreach (var frame in eo.GetStackFrames(e))
+            {
+                display_msg.AppendLine("  File \"" + frame.GetFileName() + "\", line " + frame.GetFileLineNumber().ToString()
+                    + ", in " + frame.GetMethodName());
+            }
+            return display_msg.ToString();
+        }
     }
 }

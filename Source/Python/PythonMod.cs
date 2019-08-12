@@ -221,7 +221,8 @@ namespace Python
             }
             catch (Exception e)
             {
-                Verse.Log.Error("In '" + scriptPath + "': " + e.ToString());
+                string msg = "Exception while loading " + scriptPath + ": " + e.ToString() + "\n" + Py.GetFullErrorMessage(e);
+                Verse.Log.Error(msg);
                 pkg_dict["__error__"] = e;
             }
         }
@@ -239,9 +240,11 @@ namespace Python
         }
         private Dictionary<string, BundledModuleInfo> availableModules = new Dictionary<string, BundledModuleInfo>();
 
+        public static string BundledModulesDir => Path.Combine(ModBasePath, "PythonModules/");
+
         public BundledModuleManager()
         {
-            string[] files = Directory.GetFiles(Util.BundledModulesDir);
+            string[] files = Directory.GetFiles(BundledModulesDir);
             foreach (var path in files)
             {
                 var cpath = new ComparablePath(path);
@@ -250,7 +253,7 @@ namespace Python
                     availableModules[fn] = new BundledModuleInfo() { name = fn, path = cpath };
             }
 
-            string[] dirs = Directory.GetDirectories(Util.BundledModulesDir);
+            string[] dirs = Directory.GetDirectories(BundledModulesDir);
             var sep = Path.DirectorySeparatorChar.ToString();
             foreach (var path in dirs)
             {
