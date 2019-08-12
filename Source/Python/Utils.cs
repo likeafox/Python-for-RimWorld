@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using System.Linq;
 
 using ScriptScope = Microsoft.Scripting.Hosting.ScriptScope;
+using BuiltinFunction = IronPython.Runtime.Types.BuiltinFunction;
 using IronPython.Runtime;
 using Harmony;
 
@@ -39,8 +40,6 @@ namespace Python
                 return _modBasePath;
             }
         }
-
-        public static string BundledModulesDir => Path.Combine(ModBasePath, "PythonModules/");
 
         public static string ResourcePath(string filename = "")
         {
@@ -205,6 +204,111 @@ namespace Python
             var args = new object[] { mc.Context, existingExt, ClrModule.GetPythonType(type) };
             object newExt = ExtensionMethodSet.GetMethod("AddType").Invoke(null, args);
             extsetProp.SetValue(mc, newExt, null);
+        }
+
+        //TODO: Extensions don't seem to work on certain builtin types. Try make a patch so it works
+        /*public static BuiltinFunction Template(this IronPython.Runtime.Types.BuiltinMethodDescriptor bmd)
+        {
+            return (BuiltinFunction)typeof(IronPython.Runtime.Types.BuiltinMethodDescriptor).InvokeMember("_template",
+                BindingFlags.GetField | BindingFlags.NonPublic | BindingFlags.Instance,
+                null, bmd, null);
+        }*/
+    }
+
+    public static class AddressedStorage
+    {
+        // General purpose object storage
+        //
+        // DESPITE THE USE OF A CRYPTO CIPHER, THIS CLASS PERFORMS ABSOLUTELY NO SECURITY FUNCTION.
+        // DO NOT REUSE ANY OF THE CODE IN THIS CLASS FOR CRYPTO PURPOSES.
+        // That said, the DES cipher is chosen because it has several properties that are desirable for key generation:
+        // 1) values appear "unpredictable". This means: if client code is buggy and accidentally uses a key it got elsewhere
+        //    (for example a commonly stored value such as the number 1), it will not by chance use someone else's key
+        //    (which might hide the bug rather than throwing an exception).
+        // 2) all new generated keys will be unique for the life of the program. This, somewhat relatedly to the last point,
+        //    prevents bugs where a reuse of a key of a deleted item accidentally retrieves another item. Keyspace is
+        //    sufficiently large enough that key collisions by buggy code remains negligible unless many thousands
+        //    of keys are created every second (and even then the OS would likely run out of memory before any collision).
+        // 3) the key is represented by a primative data type, which makes it passable in more contexts than it otherwise
+        //    would be (for example to unmanaged code)
+        private static bool _initialized = false;
+        private static Dictionary<UInt64, object> contents = new Dictionary<UInt64, object>();
+        private static UInt64 ctr = 0;
+        private static System.Security.Cryptography.DES alg;
+        private static System.Security.Cryptography.ICryptoTransform encryptor;
+
+        private static void Initialize()
+        {
+            alg = System.Security.Cryptography.DES.Create();
+            alg.Mode = System.Security.Cryptography.CipherMode.ECB;
+            byte[] key = new byte[8];
+            Util.Random.NextBytes(key);
+            alg.Key = key;
+            alg.IV = new byte[8];
+            encryptor = alg.CreateEncryptor();
+            _initialized = true;
+        }
+
+        private static UInt64 GenKey()
+        {
+            if (!_initialized)
+                Initialize();
+            byte[] _in = BitConverter.GetBytes(ctr);
+            byte[] _out = new byte[8];
+            encryptor.TransformBlock(_in, 0, 8, _out, 0);
+            ctr++;
+            return BitConverter.ToUInt64(_out, 0);
+        }
+
+        public static UInt64 Store(object o)
+        {
+            var k = GenKey();
+            contents[k] = o;
+            return k;
+        }
+        public static bool IsValid(UInt64 k) => contents.ContainsKey(k);
+        public static object Fetch(UInt64 k) => contents[k];
+        public static void Delete(UInt64 k) => contents.Remove(k);
+        public static void Modify(UInt64 k, object o)
+        {
+            if (!contents.ContainsKey(k))
+                throw new ArgumentException("Addressed object does not exist");
+            contents[k] = o;
+        }
+
+        public class Handle<T>
+        {
+            //A class to assist in changing object lifespan from explicit to ownership-based.
+            //The owner will create a Handle, and then pass out Address to clients.
+            //Handle also adds some convenience by retaining Type information.
+            //IDisposable could easily be implemented at a later time if desired
+            //https://docs.microsoft.com/en-us/dotnet/standard/garbage-collection/implementing-dispose
+
+            private UInt64 _key;
+
+            public Handle(T o)
+            {
+                _key = Store(o);
+            }
+
+            ~Handle()
+            {
+                Delete(_key); //doesn't throw an exception
+            }
+
+            public bool IsValid => AddressedStorage.IsValid(_key);
+            public UInt64 Key => _key;
+            public T Object
+            {
+                get
+                {
+                    return (T)Fetch(_key);
+                }
+                set
+                {
+                    Modify(_key, value);
+                }
+            }
         }
     }
 

@@ -69,12 +69,11 @@ namespace Python
             string[] searchpaths = new string[]
             {
                 System.IO.Path.Combine(Util.ModBasePath, "IronPython-2.7.7/Lib/"),
-                Util.BundledModulesDir
+                System.IO.Path.Combine(Util.ModBasePath, "PythonModules/")
             };
             _engine.SetSearchPaths(searchpaths);
             _runtime.LoadAssembly(System.Reflection.Assembly.GetExecutingAssembly());
             _runtime.LoadAssembly(typeof(Verse.Game).Assembly);
-            _runtime.LoadAssembly(typeof(Harmony.HarmonyInstance).Assembly);
         }
     }
 }
