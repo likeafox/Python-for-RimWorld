@@ -61,10 +61,12 @@ namespace Python.Loader
             tracker.ModDoneCreating +=
                 delegate (object sender, ModClassCreationTracker.ModDoneCreatingEventArgs e)
             {
-                //Verse.Log.Message("trigger to load python script for mod: " + e.mod.Name);
-                PythonAssembly.GetType("Python.PythonModManager").GetMethod("PopulateWithNewMod",
-                    BindingFlags.Public | BindingFlags.Static)
-                    .Invoke(null, new object[] { e.mod });
+                if (Directory.Exists(Path.Combine(e.mod.RootDir, "Python/")))
+                {
+                    PythonAssembly.GetType("Python.PythonModManager").GetMethod("PopulateWithNewMod",
+                        BindingFlags.Public | BindingFlags.Static)
+                        .Invoke(null, new object[] { e.mod });
+                }
             };
         }
     }

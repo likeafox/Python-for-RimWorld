@@ -20,7 +20,7 @@ def _setup():
         if state <= 1:
             clr.AddReferenceByName(qname)
 
-import sys, MonoMod, IronPython, System
+import sys, MonoMod, IronPython, System, Python
 from Harmony import HarmonyInstance, HarmonyMethod
 from MonoMod.Utils import DynamicMethodDefinition
 
@@ -35,12 +35,12 @@ class Harmony(object):
         if type(f) == clr.GetPythonType(IronPython.Runtime.Types.BuiltinMethodDescriptor):
             f = f._BuiltinMethodDescriptor___template
         if type(f) == clr.GetPythonType(IronPython.Runtime.Types.BuiltinFunction):
-            if len(f.Targets != 1):
+            if len(f.Targets) != 1:
                 raise ValueError("Ambiguous function specification. You may " + \
                                  "be missing type parameters for a generic " + \
                                  "or overloaded function.")
             r = { 'target' : f.Targets[0],
-                  'name' : f.Name,
+                  'name' : f._BuiltinFunction__Name,
                   'declaring_type' : f.DeclaringType, }
             return r
         raise TypeError("Incompatible type " + repr(type(f)) +
@@ -52,21 +52,21 @@ class Harmony(object):
         s.core_func = method.__func__
         s.patch_kind = method.__func__.__name__ # will be (prefix/postfix/transpiler)
         s.patch_name = target_info['declaring_type'].FullName + '_' + \
-                       target_info['name'] + '_' + patch_kind
+                       target_info['name'] + '_' + s.patch_kind
 
-        if patch_kind in ('prefix','postfix'):
+        if s.patch_kind in ('prefix','postfix'):
             s.patch_return_type = {
                 'prefix': clr.GetClrType(bool),
                 'postfix': None,
                 }[s.patch_kind]
-            s.refs = s.core_func.refs #method.__func__.refs are which params can be written to
+            s.refs = getattr(s.core_func, 'refs', set()) #method.__func__.refs are which params can be written to
             _c = s.core_func.__code__
             s.pymethod_param_list = list(_c.co_varnames[:_c.co_argcount])
-            _pg = [(p.Name, p.ParameterType) for p in target_info.target.GetParameters()]
+            _pg = [(p.Name, p.ParameterType) for p in target_info['target'].GetParameters()]
             target_param_info = dict(_pg)
             target_param_list = zip(*_pg)[0]
             _valid_refs = set(target_param_list) | {'__result'}
-            _valid_params = valid_refs | {'__instance'}
+            _valid_params = _valid_refs | {'__instance'}
             if not s.refs <= _valid_refs:
                 raise ValueError("Specified refs don't correspond to valid, referencable names")
             if not set(s.pymethod_param_list) <= _valid_params:
@@ -86,17 +86,19 @@ class Harmony(object):
                 if n in s.refs:
                     t = t.MakeByRefType()
                 s.patch_param_types.append(t)
-            wrap_addr = Python.AddressedStorage.Store(_get_affix_wrapper(s))
+            wrap_addr = Python.AddressedStorage.Store(Harmony._get_affix_wrapper(s))
             dmd = DynamicMethodDefinition(
-                s.patch_name, s.patch_return_type, s.patch_param_types)
-            _emit_affix_body(dmd.GetILGenerator(), s, wrap_addr)
-        elif patch_kind == 'transpiler':
+                s.patch_name, s.patch_return_type, System.Array[System.Type](s.patch_param_types))
+            for i,n in zip(range(len(s.patch_param_names)),s.patch_param_names):
+                dmd.Definition.Parameters[i].Name = n
+            Harmony._emit_affix_body(dmd.GetILGenerator(), s, wrap_addr)
+        elif s.patch_kind == 'transpiler':
             T = clr.GetClrType(System.Collections.IEnumerable[
                 Harmony.CodeInstruction])
             raise NotImplementedError("Transpilers not supported yet")
 
         dmd.Generator = DynamicMethodDefinition.GeneratorType.Cecil
-        return dmd.Generate()
+        return HarmonyMethod(dmd.Generate())
 
     @staticmethod
     def _get_affix_wrapper(specification):
@@ -125,12 +127,12 @@ class Harmony(object):
                             if (x in range(9)) else (c.Ldc_I4, x)
         Ldarg_ = lambda x: (getattr(c,"Ldarg_"+str(param_i)),) \
                            if (param_i in range(4)) else (c.Ldarg_S, param_i)
-        methodinfo = lambda f: _get_target_info(f)['target']
+        methodinfo = lambda f: Harmony._get_target_info(f)['target']
             
         #0  python function return values
         il.DeclareLocal(System.Array[System.Object])
         #1  IDictionary assignments
-        assdict_type = System.Collection.Generic.IDictionary[System.String, System.Object]
+        assdict_type = System.Collections.Generic.IDictionary[System.String, System.Object]
         il.DeclareLocal(assdict_type)
         #2  out object for TryGetValue
         il.DeclareLocal(System.Object)
@@ -138,8 +140,8 @@ class Harmony(object):
         il.Emit(c.Nop)
 
         #get python function
-        il.Emit(c.Ldc_I8, inner_addr)
-        il.Emit(c.Call, methodinfo(Python.StaticStorage.Fetch))
+        il.Emit(c.Ldc_I8, System.Int64(inner_addr))
+        il.Emit(c.Call, methodinfo(Python.AddressedStorage.Fetch))
         #stack: (python function)
 
         #set up args
@@ -162,8 +164,11 @@ class Harmony(object):
         #stack: (python function , arg array)
 
         #call main (core) function
-        Call = IronPython.Runtime.Operations.Call[System.Object,System.Array[System.Object]]
-        il.Emit(c.Call, methodinfo(Call))
+        Call_targets = IronPython.Runtime.Operations.PythonCalls.Call.Overloads[
+            System.Object, System.Array[System.Object]
+            ].Targets
+        Call = dict((len(t.GetParameters()),t) for t in Call_targets)[2]
+        il.Emit(c.Call, Call)
         il.Emit(c.Castclass, System.Array[System.Object])
         il.Emit(c.Stloc_0)
         #stack: ()
@@ -223,7 +228,7 @@ class Harmony(object):
         #getting target as a basic attribute of cls is fine.
         #if users want dynamic resolution they can set up a __get__
         target_info = self._get_target_info(cls.target)
-        args = {'original': target}
+        args = {'original': target_info['target']}
         for name in ('prefix','postfix','transpiler'):
             method = getattr(cls, name, None)
             if method:
@@ -231,11 +236,16 @@ class Harmony(object):
         cls.patch = self.instance.Patch(**args)
         return cls
 
+#def get_overload(f, types):
+#    types = [clr.GetClrType(t) for t in types]
+#    overloads = dict((list(k._TypeList___types),v) for k,v in f._BuiltinFunction__OverloadDictionary)
+#    return overloads[types]
+
 def usingrefs(*args):
     def dec(f):
         v = set(args)
         if len(args) is not len(v):
-            ValueError("Duplicate ref names.")
+            raise ValueError("Duplicate ref names.")
         f.refs = v
         return f
     return dec
