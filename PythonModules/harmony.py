@@ -48,7 +48,14 @@ class Harmony(object):
 
     @staticmethod
     def _make_harmony_method(method, target_info):
-        s = lambda: None #specification container
+
+        #s: specification container
+        #   [ members ]
+        #   core_func       patch_return_type       patch_param_names
+        #   patch_kind      pymethod_param_list     patch_param_types
+        #   patch_name      refs
+        s = lambda: None
+
         s.core_func = method.__func__
         s.patch_kind = method.__func__.__name__ # will be (prefix/postfix/transpiler)
         s.patch_name = target_info['declaring_type'].FullName + '_' + \
@@ -74,15 +81,12 @@ class Harmony(object):
             s.patch_param_names = s.pymethod_param_list + list(s.refs - set(s.pymethod_param_list))
             s.patch_param_types = []
             for n in s.patch_param_names:
-                #if n == '__result':
-                #    t = target_info['target'].ReturnType
-                #elif n == '__instance':
-                #    t = target_info['declaring_type']
-                #else:
-                #    t = target_param_info[n]
-                # !!! actually, just make everything into an object instead.
-                #     _emit_affix_body will thank us later.
-                t = System.Object
+                if n == '__result':
+                    t = target_info['target'].ReturnType
+                elif n == '__instance':
+                    t = target_info['declaring_type']
+                else:
+                    t = target_param_info[n]
                 if n in s.refs:
                     t = t.MakeByRefType()
                 s.patch_param_types.append(t)
@@ -128,11 +132,12 @@ class Harmony(object):
         Ldarg_ = lambda x: (getattr(c,"Ldarg_"+str(param_i)),) \
                            if (param_i in range(4)) else (c.Ldarg_S, param_i)
         methodinfo = lambda f: Harmony._get_target_info(f)['target']
+        is_value_type = lambda t: System.Type.IsAssignableFrom(System.ValueType, t)
             
         #0  python function return values
         il.DeclareLocal(System.Array[System.Object])
         #1  IDictionary assignments
-        assdict_type = System.Collections.Generic.IDictionary[System.String, System.Object]
+        assdict_type = IronPython.Runtime.PythonDictionary
         il.DeclareLocal(assdict_type)
         #2  out object for TryGetValue
         il.DeclareLocal(System.Object)
@@ -156,18 +161,24 @@ class Harmony(object):
             il.Emit(*Ldc_I4_(array_i))
             #put value from arg
             param_i = s.patch_param_names.index(pyparam)
+            param_t = s.patch_param_types[param_i]
             il.Emit(*Ldarg_(param_i))
             if pyparam in s.refs:
-                il.Emit(c.Ldind_Ref)
+                if is_value_type(param_t):
+                    il.Emit(c.Ldobj, param_t)
+                else:
+                    il.Emit(c.Ldind_Ref)
             #save to array
+            if is_value_type(param_t):
+                il.Emit(c.Box, param_t)
             il.Emit(c.Stelem_Ref)
         #stack: (python function , arg array)
 
         #call main (core) function
-        Call_targets = IronPython.Runtime.Operations.PythonCalls.Call.Overloads[
+        _Call_targets = IronPython.Runtime.Operations.PythonCalls.Call.Overloads[
             System.Object, System.Array[System.Object]
             ].Targets
-        Call = dict((len(t.GetParameters()),t) for t in Call_targets)[2]
+        Call = dict((len(t.GetParameters()),t) for t in _Call_targets)[2]
         il.Emit(c.Call, Call)
         il.Emit(c.Castclass, System.Array[System.Object])
         il.Emit(c.Stloc_0)
@@ -195,7 +206,7 @@ class Harmony(object):
                 il.Emit(c.Nop)
                 il.Emit(c.Ldloc_1)
                 il.Emit(c.Ldstr, ref)
-                il.Emit(c.Ldloca_S, 2)
+                il.Emit(c.Ldloca_S, System.Byte(2))
                 il.Emit(c.Callvirt, methodinfo(assdict_type.TryGetValue))
                 label_skip_saveref = il.DefineLabel()
                 #stack: ()
@@ -204,9 +215,14 @@ class Harmony(object):
 
                 #set reference
                 param_i = s.patch_param_names.index(ref)
+                param_t = s.patch_param_types[param_i]
                 il.Emit(*Ldarg_(param_i))
                 il.Emit(c.Ldloc_2)
-                il.Emit(c.Stind_Ref)
+                if is_value_type(param_t):
+                    il.Emit(c.Unbox_Any, param_t)
+                    il.Emit(c.Stobj, param_t)
+                else:
+                    il.Emit(c.Stind_Ref)
 
                 il.MarkLabel(label_skip_saveref)
 
@@ -218,7 +234,7 @@ class Harmony(object):
             il.Emit(c.Ldloc_0)
             il.Emit(c.Ldc_I4_0)
             il.Emit(c.Ldelem_Ref)
-            if System.Type.IsAssignableFrom(System.ValueType, s.patch_return_type):
+            if is_value_type(s.patch_return_type):
                 il.Emit(c.Unbox_Any, s.patch_return_type)
             else:
                 il.Emit(c.Isinst, s.patch_return_type)
@@ -236,15 +252,10 @@ class Harmony(object):
         cls.patch = self.instance.Patch(**args)
         return cls
 
-#def get_overload(f, types):
-#    types = [clr.GetClrType(t) for t in types]
-#    overloads = dict((list(k._TypeList___types),v) for k,v in f._BuiltinFunction__OverloadDictionary)
-#    return overloads[types]
-
 def usingrefs(*args):
     def dec(f):
         v = set(args)
-        if len(args) is not len(v):
+        if len(args) != len(v):
             raise ValueError("Duplicate ref names.")
         f.refs = v
         return f
