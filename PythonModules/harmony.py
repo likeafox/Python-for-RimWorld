@@ -47,17 +47,30 @@ class Harmony(object):
                         ". Please see the documentation for allowable types")
 
     @staticmethod
-    def _make_harmony_method(method, target_info):
+    def _make_harmony_method(core, target_info):
+
+        #- The C# method to be patched is called the "target".
+        #- The patch function written in python supplied by the user is called the "core function".
+        #- The patch function automatically generated as IL is called the "patch".
 
         #s: specification container
         #   [ members ]
-        #   core_func       patch_return_type       patch_param_names
-        #   patch_kind      pymethod_param_list     patch_param_types
-        #   patch_name      refs
+        #   core_func
+        #   core_param_list
+        #   refs
+        #   patch_kind          prefix/postfix/transpiler
+        #   patch_name
+        #   patch_return_type
+        #   patch_param_list    list of all patch parameters by their python-facing identifiers
+        #                       (they correspond to those in core_param_list)
+        #   patch_param_names   like patch_param_list but uses actual internal names that will
+        #                       go into the method signature and be seen by Harmony.
+        #                       (doesn't have trailing underscores for special variables).
+        #   patch_param_types
         s = lambda: None
 
-        s.core_func = method.__func__
-        s.patch_kind = method.__func__.__name__ # will be (prefix/postfix/transpiler)
+        s.core_func = core.__func__
+        s.patch_kind = core.__func__.__name__
         s.patch_name = target_info['declaring_type'].FullName + '_' + \
                        target_info['name'] + '_' + s.patch_kind
 
@@ -66,36 +79,46 @@ class Harmony(object):
                 'prefix': clr.GetClrType(bool),
                 'postfix': None,
                 }[s.patch_kind]
-            s.refs = getattr(s.core_func, 'refs', set()) #method.__func__.refs are which params can be written to
+            s.refs = getattr(s.core_func, 'refs', set()) #core.__func__.refs are which params can be written to
             _c = s.core_func.__code__
-            s.pymethod_param_list = list(_c.co_varnames[:_c.co_argcount])
+            s.core_param_list = list(_c.co_varnames[:_c.co_argcount])
             _pg = [(p.Name, p.ParameterType) for p in target_info['target'].GetParameters()]
             target_param_info = dict(_pg)
             target_param_list = zip(*_pg)[0]
-            _valid_refs = set(target_param_list) | {'__result'}
-            _valid_params = _valid_refs | {'__instance'}
+            _valid_refs = set(target_param_list) | {'__result__'}
+            _valid_params = _valid_refs | {'__instance__'}
             if not s.refs <= _valid_refs:
-                raise ValueError("Specified refs don't correspond to valid, referencable names")
-            if not set(s.pymethod_param_list) <= _valid_params:
+                raise ValueError("Specified refs don't correspond to valid, referencable names" + " " + str(s.refs) + " " + str(_valid_refs))
+            if not set(s.core_param_list) <= _valid_params:
                 raise ValueError("Patch parameters and target method parameters are incompatible")
-            s.patch_param_names = s.pymethod_param_list + list(s.refs - set(s.pymethod_param_list))
+
+            s.patch_param_list = list(s.refs | set(s.core_param_list))
+            s.patch_param_names = []
             s.patch_param_types = []
-            for n in s.patch_param_names:
-                if n == '__result':
+            for n in s.patch_param_list:
+                #internal names
+                int_n = n
+                if int_n.startswith("__") and int_n.endswith("__"):
+                    int_n = int_n[:-2]
+                s.patch_param_names.append(int_n)
+                #types
+                if n == '__result__':
                     t = target_info['target'].ReturnType
-                elif n == '__instance':
+                elif n == '__instance__':
                     t = target_info['declaring_type']
                 else:
-                    t = target_param_info[n]
+                    t = target_param_info[int_n]
                 if n in s.refs:
                     t = t.MakeByRefType()
                 s.patch_param_types.append(t)
+
             wrap_addr = Python.AddressedStorage.Store(Harmony._get_affix_wrapper(s))
             dmd = DynamicMethodDefinition(
                 s.patch_name, s.patch_return_type, System.Array[System.Type](s.patch_param_types))
             for i,n in zip(range(len(s.patch_param_names)),s.patch_param_names):
                 dmd.Definition.Parameters[i].Name = n
             Harmony._emit_affix_body(dmd.GetILGenerator(), s, wrap_addr)
+
         elif s.patch_kind == 'transpiler':
             T = clr.GetClrType(System.Collections.IEnumerable[
                 Harmony.CodeInstruction])
@@ -134,7 +157,7 @@ class Harmony(object):
         methodinfo = lambda f: Harmony._get_target_info(f)['target']
         is_value_type = lambda t: System.Type.IsAssignableFrom(System.ValueType, t)
             
-        #0  python function return values
+        #0  core python function return values
         il.DeclareLocal(System.Array[System.Object])
         #1  IDictionary assignments
         assdict_type = IronPython.Runtime.PythonDictionary
@@ -144,26 +167,26 @@ class Harmony(object):
 
         il.Emit(c.Nop)
 
-        #get python function
+        #get core python function
         il.Emit(c.Ldc_I8, System.Int64(inner_addr))
         il.Emit(c.Call, methodinfo(Python.AddressedStorage.Fetch))
-        #stack: (python function)
+        #stack: (core py func)
 
         #set up args
-        il.Emit(*Ldc_I4_(len(s.pymethod_param_list)))
+        il.Emit(*Ldc_I4_(len(s.core_param_list)))
         il.Emit(c.Newarr, System.Object)
-        #stack: (python function , arg array)
-        _g = zip(range(len(s.pymethod_param_list)), s.pymethod_param_list)
-        for array_i, pyparam in _g:
+        #stack: (core py func , arg array)
+        _g = zip(range(len(s.core_param_list)), s.core_param_list)
+        for array_i, coreparam in _g:
             #put array copy
             il.Emit(c.Dup)
             #put array index
             il.Emit(*Ldc_I4_(array_i))
             #put value from arg
-            param_i = s.patch_param_names.index(pyparam)
+            param_i = s.patch_param_list.index(coreparam)
             param_t = s.patch_param_types[param_i]
             il.Emit(*Ldarg_(param_i))
-            if pyparam in s.refs:
+            if coreparam in s.refs:
                 if is_value_type(param_t):
                     il.Emit(c.Ldobj, param_t)
                 else:
@@ -172,9 +195,9 @@ class Harmony(object):
             if is_value_type(param_t):
                 il.Emit(c.Box, param_t)
             il.Emit(c.Stelem_Ref)
-        #stack: (python function , arg array)
+        #stack: (core py func , arg array)
 
-        #call main (core) function
+        #call core (main) function
         _Call_targets = IronPython.Runtime.Operations.PythonCalls.Call.Overloads[
             System.Object, System.Array[System.Object]
             ].Targets
@@ -202,6 +225,9 @@ class Harmony(object):
             #stack: ()
 
             for ref in s.refs:
+                param_i = s.patch_param_list.index(ref)
+                param_t = s.patch_param_types[param_i]
+
                 #trygetvalue
                 il.Emit(c.Nop)
                 il.Emit(c.Ldloc_1)
@@ -214,8 +240,6 @@ class Harmony(object):
                 il.Emit(c.Brfalse_S, label_skip_saveref)
 
                 #set reference
-                param_i = s.patch_param_names.index(ref)
-                param_t = s.patch_param_types[param_i]
                 il.Emit(*Ldarg_(param_i))
                 il.Emit(c.Ldloc_2)
                 if is_value_type(param_t):
